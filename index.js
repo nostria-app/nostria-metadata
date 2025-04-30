@@ -15,7 +15,7 @@ app.get('/health', (req, res) => {
 });
 
 // Event endpoint - Handles both nevent1 and hex IDs
-app.get('/api/e/:eventId', async (req, res) => {
+app.get('/e/:eventId', async (req, res) => {
   try {
     const { eventId } = req.params;
     let id;
@@ -58,7 +58,7 @@ app.get('/api/e/:eventId', async (req, res) => {
 });
 
 // Profile endpoint - Handles both nprofile1 and hex pubkeys
-app.get('/api/p/:profileId', async (req, res) => {
+app.get('/p/:profileId', async (req, res) => {
   try {
     const { profileId } = req.params;
     let pubkey;
