@@ -1,0 +1,19 @@
+{
+  "name": "nostria-metadata",
+  "version": "0.0.1",
+  "description": "API to retrieve Profile or Post in JSON to be utilized in metadata (Social Sharing Preview).",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nostria-app/nostria-metadata.git"
+  },
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/nostria-app/nostria-metadata/issues"
+  },
+  "homepage": "https://github.com/nostria-app/nostria-metadata#readme"
+}
