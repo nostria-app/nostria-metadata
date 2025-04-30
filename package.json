@@ -15,5 +15,11 @@
   "bugs": {
     "url": "https://github.com/nostria-app/nostria-metadata/issues"
   },
-  "homepage": "https://github.com/nostria-app/nostria-metadata#readme"
+  "homepage": "https://github.com/nostria-app/nostria-metadata#readme",
+  "dependencies": {
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "nostr-tools": "^2.12.0",
+    "ws": "^8.18.1"
+  }
 }
