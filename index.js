@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const { nip19 } = require('nostr-tools');
 const nostrService = require('./services/nostrService');
+const fetch = require('node-fetch');  // Add this for HTTP requests
+const cheerio = require('cheerio');   // Add this for HTML parsing
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -12,6 +14,62 @@ app.use(express.json());
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// OpenGraph metadata endpoint
+app.get('/og', async (req, res) => {
+  console.log('OpenGraph metadata request received');
+  try {
+    const targetUrl = req.query.url;
+    
+    // Basic validation of the URL
+    if (!targetUrl || !(targetUrl.startsWith('http://') || targetUrl.startsWith('https://'))) {
+      return res.status(400).json({ 
+        error: 'Invalid URL. URL must be provided as a query parameter and start with http:// or https://',
+        example: '/og?url=https://example.com'
+      });
+    }
+
+    console.log(`Fetching OpenGraph metadata from: ${targetUrl}`);
+    
+    const response = await fetch(targetUrl);
+    
+    if (!response.ok) {
+      return res.status(response.status).json({ 
+        error: `Failed to fetch URL: ${response.statusText}`
+      });
+    }
+    
+    // Get the HTML content
+    const html = await response.text();
+    
+    // Parse the HTML
+    const $ = cheerio.load(html);
+    
+    // Extract OpenGraph metadata
+    const metadata = {
+      title: $('meta[property="og:title"]').attr('content'),
+      description: $('meta[property="og:description"]').attr('content'),
+      url: $('meta[property="og:url"]').attr('content') || targetUrl,
+      image: $('meta[property="og:image"]').attr('content'),
+      imageWidth: $('meta[property="og:image:width"]').attr('content'),
+      imageHeight: $('meta[property="og:image:height"]').attr('content')
+    };
+    
+    // Fallback to standard metadata if OpenGraph not available
+    if (!metadata.title) metadata.title = $('title').text();
+    if (!metadata.description) metadata.description = $('meta[name="description"]').attr('content');
+    
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    
+    return res.json(metadata);
+  } catch (error) {
+    console.error('OpenGraph extraction error:', error);
+    res.status(500).json({ error: 'Failed to extract OpenGraph metadata', details: error.message });
+  }
 });
 
 // Event endpoint - Handles both nevent1 and hex IDs

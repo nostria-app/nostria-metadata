@@ -1,6 +1,6 @@
 {
   "name": "nostria-metadata",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "API to retrieve Profile or Post in JSON to be utilized in metadata (Social Sharing Preview).",
   "main": "index.js",
   "scripts": {
@@ -17,8 +17,10 @@
   },
   "homepage": "https://github.com/nostria-app/nostria-metadata#readme",
   "dependencies": {
+    "cheerio": "^1.0.0",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "node-fetch": "^2.6.7",
     "nostr-tools": "^2.12.0",
     "ws": "^8.18.1"
   }
