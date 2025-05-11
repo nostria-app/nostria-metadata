@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const { nip19 } = require('nostr-tools');
 const nostrService = require('./services/nostrService');
 const cheerio = require('cheerio');
@@ -9,6 +10,9 @@ const port = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json());
+
+// Add CORS middleware to allow requests from any origin
+app.use(cors());
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -59,10 +63,7 @@ app.get('/og', async (req, res) => {
     if (!metadata.title) metadata.title = $('title').text();
     if (!metadata.description) metadata.description = $('meta[name="description"]').attr('content');
     
-    // Set CORS headers
-    // res.setHeader('Access-Control-Allow-Origin', '*');
-    // res.setHeader('Access-Control-Allow-Methods', 'GET');
-    // res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    // CORS headers are now set globally via middleware
     
     return res.json(metadata);
   } catch (error) {
