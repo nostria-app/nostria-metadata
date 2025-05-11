@@ -2,8 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const { nip19 } = require('nostr-tools');
 const nostrService = require('./services/nostrService');
-const fetch = require('node-fetch');  // Add this for HTTP requests
-const cheerio = require('cheerio');   // Add this for HTML parsing
+const cheerio = require('cheerio');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -61,9 +60,9 @@ app.get('/og', async (req, res) => {
     if (!metadata.description) metadata.description = $('meta[name="description"]').attr('content');
     
     // Set CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET');
-    res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    // res.setHeader('Access-Control-Allow-Origin', '*');
+    // res.setHeader('Access-Control-Allow-Methods', 'GET');
+    // res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
     
     return res.json(metadata);
   } catch (error) {
