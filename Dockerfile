@@ -1,7 +1,10 @@
-FROM node:22 AS build
+FROM node:24 AS build
+
 WORKDIR /app
+
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci --only=production && npm cache clean --force
+
 COPY . ./
 
 # Create a non-root user for security
@@ -10,7 +13,7 @@ COPY . ./
 
 # RUN npm run build
 
-FROM node:22 AS runtime
+FROM node:24 AS runtime
 
 WORKDIR /app
 
@@ -19,7 +22,6 @@ COPY --from=build /app ./
 
 # Set environment variables
 ENV NODE_ENV=production
-
 EXPOSE 3000
 
 # Switch to non-root user for security

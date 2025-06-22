@@ -8,6 +8,56 @@ const cheerio = require('cheerio');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// In-memory cache with TTL
+class MemoryCache {
+  constructor() {
+    this.cache = new Map();
+  }
+
+  set(key, value, ttl = 3600000) { // Default TTL: 1 hour (3600000ms)
+    const expiresAt = Date.now() + ttl;
+    this.cache.set(key, { value, expiresAt });
+  }
+
+  get(key) {
+    const cached = this.cache.get(key);
+    if (!cached) return null;
+
+    if (Date.now() > cached.expiresAt) {
+      this.cache.delete(key);
+      return null;
+    }
+
+    return cached.value;
+  }
+
+  delete(key) {
+    this.cache.delete(key);
+  }
+
+  clear() {
+    this.cache.clear();
+  }
+
+  // Clean up expired entries
+  cleanup() {
+    const now = Date.now();
+    for (const [key, entry] of this.cache.entries()) {
+      if (now > entry.expiresAt) {
+        this.cache.delete(key);
+      }
+    }
+  }
+}
+
+// Create cache instance
+const cache = new MemoryCache();
+
+// Clean up expired cache entries every 10 minutes
+setInterval(() => {
+  cache.cleanup();
+}, 600000);
+
 // Middleware
 app.use(express.json());
 
@@ -31,6 +81,14 @@ app.get('/og', async (req, res) => {
         error: 'Invalid URL. URL must be provided as a query parameter and start with http:// or https://',
         example: '/og?url=https://example.com'
       });
+    }
+
+    // Check cache first
+    const cacheKey = `og:${targetUrl}`;
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+      console.log(`Returning cached OpenGraph metadata for: ${targetUrl}`);
+      return res.json(cachedResult);
     }
 
     console.log(`Fetching OpenGraph metadata from: ${targetUrl}`);
@@ -63,7 +121,8 @@ app.get('/og', async (req, res) => {
     if (!metadata.title) metadata.title = $('title').text();
     if (!metadata.description) metadata.description = $('meta[name="description"]').attr('content');
     
-    // CORS headers are now set globally via middleware
+    // Cache the result for 1 hour
+    cache.set(cacheKey, metadata);
     
     return res.json(metadata);
   } catch (error) {
@@ -78,6 +137,14 @@ app.get('/e/:eventId', async (req, res) => {
     const { eventId } = req.params;
     let id;
     let relayHints = [];
+    
+    // Check cache first
+    const cacheKey = `event:${eventId}`;
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+      console.log(`Returning cached event for: ${eventId}`);
+      return res.json(cachedResult);
+    }
     
     // Determine if the eventId is a nevent1 or hex
     if (eventId.startsWith('nevent1')) {
@@ -108,6 +175,9 @@ app.get('/e/:eventId', async (req, res) => {
       return res.status(404).json({ error: 'Event not found' });
     }
 
+    // Cache the result for 1 hour
+    cache.set(cacheKey, event);
+
     res.json(event);
   } catch (error) {
     console.error('Error fetching event:', error);
@@ -121,6 +191,14 @@ app.get('/p/:profileId', async (req, res) => {
     const { profileId } = req.params;
     let pubkey;
     let relayHints = [];
+    
+    // Check cache first
+    const cacheKey = `profile:${profileId}`;
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+      console.log(`Returning cached profile for: ${profileId}`);
+      return res.json(cachedResult);
+    }
     
     // Determine if the profileId is a nprofile1 or hex
     if (profileId.startsWith('nprofile1')) {
@@ -150,6 +228,9 @@ app.get('/p/:profileId', async (req, res) => {
     if (!profile) {
       return res.status(404).json({ error: 'Profile not found' });
     }
+
+    // Cache the result for 1 hour
+    cache.set(cacheKey, profile);
 
     res.json(profile);
   } catch (error) {
