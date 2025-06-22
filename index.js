@@ -74,10 +74,10 @@ app.get('/og', async (req, res) => {
   console.log('OpenGraph metadata request received');
   try {
     const targetUrl = req.query.url;
-    
+
     // Basic validation of the URL
     if (!targetUrl || !(targetUrl.startsWith('http://') || targetUrl.startsWith('https://'))) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Invalid URL. URL must be provided as a query parameter and start with http:// or https://',
         example: '/og?url=https://example.com'
       });
@@ -92,21 +92,21 @@ app.get('/og', async (req, res) => {
     }
 
     console.log(`Fetching OpenGraph metadata from: ${targetUrl}`);
-    
+
     const response = await fetch(targetUrl);
-    
+
     if (!response.ok) {
-      return res.status(response.status).json({ 
+      return res.status(response.status).json({
         error: `Failed to fetch URL: ${response.statusText}`
       });
     }
-    
+
     // Get the HTML content
     const html = await response.text();
-    
+
     // Parse the HTML
     const $ = cheerio.load(html);
-    
+
     // Extract OpenGraph metadata
     const metadata = {
       title: $('meta[property="og:title"]').attr('content'),
@@ -116,14 +116,14 @@ app.get('/og', async (req, res) => {
       imageWidth: $('meta[property="og:image:width"]').attr('content'),
       imageHeight: $('meta[property="og:image:height"]').attr('content')
     };
-    
+
     // Fallback to standard metadata if OpenGraph not available
     if (!metadata.title) metadata.title = $('title').text();
     if (!metadata.description) metadata.description = $('meta[name="description"]').attr('content');
-    
+
     // Cache the result for 1 hour
     cache.set(cacheKey, metadata);
-    
+
     return res.json(metadata);
   } catch (error) {
     console.error('OpenGraph extraction error:', error);
@@ -137,7 +137,7 @@ app.get('/e/:eventId', async (req, res) => {
     const { eventId } = req.params;
     let id;
     let relayHints = [];
-    
+
     // Check cache first
     const cacheKey = `event:${eventId}`;
     const cachedResult = cache.get(cacheKey);
@@ -145,7 +145,7 @@ app.get('/e/:eventId', async (req, res) => {
       console.log(`Returning cached event for: ${eventId}`);
       return res.json(cachedResult);
     }
-    
+
     // Determine if the eventId is a nevent1 or hex
     if (eventId.startsWith('nevent1')) {
       try {
@@ -153,7 +153,7 @@ app.get('/e/:eventId', async (req, res) => {
         if (decoded.type !== 'note' && decoded.type !== 'nevent') {
           return res.status(400).json({ error: 'Invalid nevent format' });
         }
-        
+
         if (decoded.type === 'note') {
           id = decoded.data;
         } else {
@@ -170,7 +170,7 @@ app.get('/e/:eventId', async (req, res) => {
 
     // Fetch the event using our nostrService
     const event = await nostrService.getEvent(id, relayHints);
-    
+
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
@@ -191,7 +191,7 @@ app.get('/p/:profileId', async (req, res) => {
     const { profileId } = req.params;
     let pubkey;
     let relayHints = [];
-    
+
     // Check cache first
     const cacheKey = `profile:${profileId}`;
     const cachedResult = cache.get(cacheKey);
@@ -199,7 +199,7 @@ app.get('/p/:profileId', async (req, res) => {
       console.log(`Returning cached profile for: ${profileId}`);
       return res.json(cachedResult);
     }
-    
+
     // Determine if the profileId is a nprofile1 or hex
     if (profileId.startsWith('nprofile1')) {
       try {
@@ -207,7 +207,7 @@ app.get('/p/:profileId', async (req, res) => {
         if (decoded.type !== 'nprofile' && decoded.type !== 'npub') {
           return res.status(400).json({ error: 'Invalid nprofile format' });
         }
-        
+
         if (decoded.type === 'npub') {
           pubkey = decoded.data;
         } else {
@@ -224,7 +224,7 @@ app.get('/p/:profileId', async (req, res) => {
 
     // Fetch the profile using our nostrService
     const profile = await nostrService.getProfile(pubkey, relayHints);
-    
+
     if (!profile) {
       return res.status(404).json({ error: 'Profile not found' });
     }
@@ -236,6 +236,48 @@ app.get('/p/:profileId', async (req, res) => {
   } catch (error) {
     console.error('Error fetching profile:', error);
     res.status(500).json({ error: 'Failed to fetch profile', details: error.message });
+  }
+});
+
+// Article endpoint
+app.get('/a/:addr', async (req, res) => {
+  try {
+    const { addr } = req.params;
+    let id;
+    let relayHints = [];
+
+    // Check cache first
+    const cacheKey = `article:${addr}`;
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+      console.log(`Returning cached article for: ${addr}`);
+      return res.json(cachedResult);
+    }
+
+    if (!addr.startsWith('naddr')) {
+      return res.status(400).json({ error: 'Invalid address format. Must start with naddr.' });
+    }
+
+    const decoded = nip19.decode(addr);
+    relayHints = decoded.data.relays || [];
+
+    console.log(`Decoded address:`, decoded);
+
+    // Determine if the eventId is a nevent1 or hex
+    // Fetch the event using our nostrService
+    const event = await nostrService.getArticle(decoded.data.pubkey, decoded.data.identifier, decoded.data.kind, relayHints);
+
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    // Cache the result for 1 hour
+    cache.set(cacheKey, event);
+
+    return res.json(event);
+  } catch (error) {
+    console.error('Error fetching event:', error);
+    res.status(500).json({ error: 'Failed to fetch event', details: error.message });
   }
 });
 

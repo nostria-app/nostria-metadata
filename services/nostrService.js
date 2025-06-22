@@ -8,8 +8,8 @@ useWebSocketImplementation(WebSocket);
 class NostrService {
   constructor() {
     this.pool = null;
-    this.defaultRelays = process.env.DEFAULT_RELAYS 
-      ? process.env.DEFAULT_RELAYS.split(',') 
+    this.defaultRelays = process.env.DEFAULT_RELAYS
+      ? process.env.DEFAULT_RELAYS.split(',')
       : ['wss://relay.damus.io', 'wss://relay.nostr.band', 'wss://nos.lol'];
     this.timeout = parseInt(process.env.RELAY_TIMEOUT || '3000');
   }
@@ -35,10 +35,10 @@ class NostrService {
 
     // Combine default relays with relay hints
     const relays = [...new Set([...this.defaultRelays, ...relayHints])];
-    
+
     try {
       console.log(`Fetching event ${eventId} from relays:`, relays);
-      
+
       const event = await this.pool.get(
         relays,
         {
@@ -87,10 +87,10 @@ class NostrService {
 
     // Combine default relays with relay hints
     const relays = [...new Set([...this.defaultRelays, ...relayHints])];
-    
+
     try {
       console.log(`Fetching profile ${pubkey} from relays:`, relays);
-      
+
       // Get the most recent kind 0 event (metadata) for this pubkey
       const profileEvent = await this.pool.get(
         relays,
@@ -134,6 +134,64 @@ class NostrService {
     if (this.pool) {
       this.pool.close(this.defaultRelays);
       this.pool = null;
+    }
+  }
+
+  /**
+   * Fetch a Nostr article by it's author and identifier
+   * @param {string} author - The author in hex format
+   * @param {string} identifier - The article identifier
+   * @param {number} kind - The event kind
+   * @param {Array<string>} relayHints - Optional relay hints
+   * @returns {Promise<Object>} The event object
+   */
+  async getArticle(author, identifier, kind, relayHints = []) {
+    if (!this.pool) {
+      this.initialize();
+    }
+
+    // Combine default relays with relay hints
+    const relays = [...new Set([...this.defaultRelays, ...relayHints])];
+
+    try {
+      console.log(`Fetching article ${identifier} by ${author} from relays:`, relays);
+
+      const filter = {
+        authors: [author],
+        kinds: [kind],
+        [`#d`]: [identifier]
+      };
+
+      console.log(`Filter for article:`, filter);
+
+      const event = await this.pool.get(
+        relays,
+        filter,
+        {
+          timeout: this.timeout
+        }
+      );
+
+      if (!event) {
+        console.log(`Event ${eventId} not found`);
+        return null;
+      }
+
+      // If this is a article, also get the author's profile
+      try {
+        const authorProfile = await this.getProfile(author, relayHints);
+        if (authorProfile) {
+          // Add author profile information to the event
+          event.author = authorProfile;
+        }
+      } catch (error) {
+        console.warn(`Could not fetch author profile for event ${eventId}:`, error.message);
+      }
+
+      return event;
+    } catch (error) {
+      console.error(`Error fetching event ${eventId}:`, error);
+      throw error;
     }
   }
 }
