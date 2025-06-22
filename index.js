@@ -201,7 +201,7 @@ app.get('/p/:profileId', async (req, res) => {
     }
 
     // Determine if the profileId is a nprofile1 or hex
-    if (profileId.startsWith('nprofile1')) {
+    if (profileId.startsWith('nprofile') || profileId.startsWith('npub')) {
       try {
         const decoded = nip19.decode(profileId);
         if (decoded.type !== 'nprofile' && decoded.type !== 'npub') {
@@ -217,13 +217,19 @@ app.get('/p/:profileId', async (req, res) => {
       } catch (error) {
         return res.status(400).json({ error: 'Invalid nprofile format', details: error.message });
       }
-    } else {
+    }
+    else {
       // Assume it's a hex pubkey
       pubkey = profileId;
     }
 
     // Fetch the profile using our nostrService
-    const profile = await nostrService.getProfile(pubkey, relayHints);
+    const author = await nostrService.getProfile(pubkey, relayHints);
+
+    const profile = {
+      content: author.profile.about || '',
+      author: author,
+    }
 
     if (!profile) {
       return res.status(404).json({ error: 'Profile not found' });

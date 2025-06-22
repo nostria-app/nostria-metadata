@@ -106,6 +106,8 @@ class NostrService {
       if (!profileEvent) {
         console.log(`Profile for ${pubkey} not found`);
         return null;
+      } else {
+        console.log(`Found profile for ${pubkey}:`, profileEvent);
       }
 
       let profileData;
@@ -116,11 +118,15 @@ class NostrService {
         profileData = {}; // Default to empty object if parsing fails
       }
 
-      // Return both the raw event and the parsed profile data
-      return {
+      const result = {
         ...profileEvent,
         profile: profileData
-      };
+      }
+
+      console.log('Profile data:', result);
+
+      // Return both the raw event and the parsed profile data
+      return result;
     } catch (error) {
       console.error(`Error fetching profile ${pubkey}:`, error);
       throw error;
