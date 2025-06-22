@@ -37,8 +37,6 @@ class NostrService {
     const relays = [...new Set([...this.defaultRelays, ...relayHints])];
 
     try {
-      console.log(`Fetching event ${eventId} from relays:`, relays);
-
       const event = await this.pool.get(
         relays,
         {
@@ -89,8 +87,6 @@ class NostrService {
     const relays = [...new Set([...this.defaultRelays, ...relayHints])];
 
     try {
-      console.log(`Fetching profile ${pubkey} from relays:`, relays);
-
       // Get the most recent kind 0 event (metadata) for this pubkey
       const profileEvent = await this.pool.get(
         relays,
@@ -104,10 +100,7 @@ class NostrService {
       );
 
       if (!profileEvent) {
-        console.log(`Profile for ${pubkey} not found`);
         return null;
-      } else {
-        console.log(`Found profile for ${pubkey}:`, profileEvent);
       }
 
       let profileData;
@@ -122,8 +115,6 @@ class NostrService {
         ...profileEvent,
         profile: profileData
       }
-
-      console.log('Profile data:', result);
 
       // Return both the raw event and the parsed profile data
       return result;
@@ -160,15 +151,11 @@ class NostrService {
     const relays = [...new Set([...this.defaultRelays, ...relayHints])];
 
     try {
-      console.log(`Fetching article ${identifier} by ${author} from relays:`, relays);
-
       const filter = {
         authors: [author],
         kinds: [kind],
         [`#d`]: [identifier]
       };
-
-      console.log(`Filter for article:`, filter);
 
       const event = await this.pool.get(
         relays,
@@ -179,7 +166,7 @@ class NostrService {
       );
 
       if (!event) {
-        console.log(`Event ${eventId} not found`);
+        console.warn(`Event ${eventId} not found`);
         return null;
       }
 

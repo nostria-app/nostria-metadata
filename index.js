@@ -71,7 +71,6 @@ app.get('/health', (req, res) => {
 
 // OpenGraph metadata endpoint
 app.get('/og', async (req, res) => {
-  console.log('OpenGraph metadata request received');
   try {
     const targetUrl = req.query.url;
 
@@ -87,11 +86,8 @@ app.get('/og', async (req, res) => {
     const cacheKey = `og:${targetUrl}`;
     const cachedResult = cache.get(cacheKey);
     if (cachedResult) {
-      console.log(`Returning cached OpenGraph metadata for: ${targetUrl}`);
       return res.json(cachedResult);
     }
-
-    console.log(`Fetching OpenGraph metadata from: ${targetUrl}`);
 
     const response = await fetch(targetUrl);
 
@@ -142,7 +138,6 @@ app.get('/e/:eventId', async (req, res) => {
     const cacheKey = `event:${eventId}`;
     const cachedResult = cache.get(cacheKey);
     if (cachedResult) {
-      console.log(`Returning cached event for: ${eventId}`);
       return res.json(cachedResult);
     }
 
@@ -196,7 +191,6 @@ app.get('/p/:profileId', async (req, res) => {
     const cacheKey = `profile:${profileId}`;
     const cachedResult = cache.get(cacheKey);
     if (cachedResult) {
-      console.log(`Returning cached profile for: ${profileId}`);
       return res.json(cachedResult);
     }
 
@@ -256,7 +250,6 @@ app.get('/a/:addr', async (req, res) => {
     const cacheKey = `article:${addr}`;
     const cachedResult = cache.get(cacheKey);
     if (cachedResult) {
-      console.log(`Returning cached article for: ${addr}`);
       return res.json(cachedResult);
     }
 
@@ -266,8 +259,6 @@ app.get('/a/:addr', async (req, res) => {
 
     const decoded = nip19.decode(addr);
     relayHints = decoded.data.relays || [];
-
-    console.log(`Decoded address:`, decoded);
 
     // Determine if the eventId is a nevent1 or hex
     // Fetch the event using our nostrService
