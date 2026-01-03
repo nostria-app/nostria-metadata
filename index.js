@@ -89,7 +89,11 @@ app.get('/og', async (req, res) => {
       return res.json(cachedResult);
     }
 
-    const response = await fetch(targetUrl);
+    const response = await fetch(targetUrl, {
+      headers: {
+        'User-Agent': 'Twitterbot/1.0'
+      }
+    });
 
     if (!response.ok) {
       return res.status(response.status).json({
