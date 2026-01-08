@@ -89,27 +89,49 @@ app.get('/og', async (req, res) => {
       return res.json(cachedResult);
     }
 
+    console.log(`Fetching OpenGraph data for: ${targetUrl}`);
+
     const response = await fetch(targetUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; Twitterbot/1.0)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
         'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
+        'Referer': 'https://twitter.com/',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Cache-Control': 'max-age=0'
       },
-      redirect: 'follow', // Explicitly follow redirects
-      follow: 20 // Maximum number of redirects to follow
+      redirect: 'follow',
+      follow: 20
     });
 
     if (!response.ok) {
       console.error(`Failed to fetch ${targetUrl}: ${response.status} ${response.statusText}`);
+      console.error(`Response headers:`, Object.fromEntries(response.headers.entries()));
+      
+      // If we get a 403, try to provide more context
+      if (response.status === 403) {
+        return res.status(403).json({
+          error: 'The target server is blocking this request. This may be due to IP-based restrictions or bot detection.',
+          statusCode: 403,
+          url: targetUrl,
+          suggestion: 'The target website may be blocking requests from server IPs. Consider using a proxy service or contacting the website administrator.'
+        });
+      }
+      
       return res.status(response.status).json({
         error: `Failed to fetch URL: ${response.statusText}`,
         statusCode: response.status,
         url: targetUrl
       });
     }
+
+    console.log(`Successfully fetched ${targetUrl}, final URL: ${response.url}`);
 
     // Get the final URL after redirects
     const finalUrl = response.url;
