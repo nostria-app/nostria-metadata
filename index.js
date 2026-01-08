@@ -91,15 +91,23 @@ app.get('/og', async (req, res) => {
 
     const response = await fetch(targetUrl, {
       headers: {
-        'User-Agent': 'Twitterbot/1.0'
+        'User-Agent': 'Mozilla/5.0 (compatible; Twitterbot/1.0)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
       },
       redirect: 'follow', // Explicitly follow redirects
       follow: 20 // Maximum number of redirects to follow
     });
 
     if (!response.ok) {
+      console.error(`Failed to fetch ${targetUrl}: ${response.status} ${response.statusText}`);
       return res.status(response.status).json({
-        error: `Failed to fetch URL: ${response.statusText}`
+        error: `Failed to fetch URL: ${response.statusText}`,
+        statusCode: response.status,
+        url: targetUrl
       });
     }
 
