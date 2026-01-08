@@ -18,6 +18,7 @@
   },
   "homepage": "https://github.com/nostria-app/nostria-metadata#readme",
   "dependencies": {
+    "axios": "^1.13.2",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",

@@ -4,6 +4,7 @@ const cors = require('cors');
 const { nip19 } = require('nostr-tools');
 const nostrService = require('./services/nostrService');
 const cheerio = require('cheerio');
+const axios = require('axios');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -91,53 +92,68 @@ app.get('/og', async (req, res) => {
 
     console.log(`Fetching OpenGraph data for: ${targetUrl}`);
 
-    const response = await fetch(targetUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Referer': 'https://twitter.com/',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Cache-Control': 'max-age=0'
-      },
-      redirect: 'follow',
-      follow: 20
-    });
+    let response;
+    let html;
+    let finalUrl = targetUrl;
 
-    if (!response.ok) {
-      console.error(`Failed to fetch ${targetUrl}: ${response.status} ${response.statusText}`);
-      console.error(`Response headers:`, Object.fromEntries(response.headers.entries()));
+    try {
+      // Use axios which handles Cloudflare better than fetch
+      response = await axios.get(targetUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Cache-Control': 'max-age=0',
+          'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120"',
+          'Sec-Ch-Ua-Mobile': '?0',
+          'Sec-Ch-Ua-Platform': '"Windows"',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          'Sec-Fetch-User': '?1',
+          'Upgrade-Insecure-Requests': '1'
+        },
+        maxRedirects: 20,
+        timeout: 15000,
+        validateStatus: function (status) {
+          return status >= 200 && status < 500; // Accept all non-5xx responses
+        }
+      });
+
+      html = response.data;
+      finalUrl = response.request.res?.responseUrl || targetUrl;
       
-      // If we get a 403, try to provide more context
+      console.log(`Successfully fetched ${targetUrl}, status: ${response.status}, final URL: ${finalUrl}`);
+
       if (response.status === 403) {
+        console.error(`Got 403 from ${targetUrl}`);
         return res.status(403).json({
-          error: 'The target server is blocking this request. This may be due to IP-based restrictions or bot detection.',
+          error: 'The target server is blocking this request (Cloudflare protection detected)',
           statusCode: 403,
           url: targetUrl,
-          suggestion: 'The target website may be blocking requests from server IPs. Consider using a proxy service or contacting the website administrator.'
+          suggestion: 'This URL is protected by Cloudflare. The content cannot be fetched server-side.'
         });
       }
-      
-      return res.status(response.status).json({
-        error: `Failed to fetch URL: ${response.statusText}`,
-        statusCode: response.status,
-        url: targetUrl
-      });
+
+      if (response.status >= 400) {
+        return res.status(response.status).json({
+          error: `Failed to fetch URL: ${response.statusText}`,
+          statusCode: response.status,
+          url: targetUrl
+        });
+      }
+    } catch (error) {
+      console.error(`Error fetching ${targetUrl}:`, error.message);
+      if (error.response) {
+        return res.status(error.response.status).json({
+          error: `Failed to fetch URL: ${error.response.statusText || error.message}`,
+          statusCode: error.response.status,
+          url: targetUrl
+        });
+      }
+      throw error;
     }
-
-    console.log(`Successfully fetched ${targetUrl}, final URL: ${response.url}`);
-
-    // Get the final URL after redirects
-    const finalUrl = response.url;
-
-    // Get the HTML content
-    const html = await response.text();
 
     // Parse the HTML
     const $ = cheerio.load(html);
