@@ -92,7 +92,9 @@ app.get('/og', async (req, res) => {
     const response = await fetch(targetUrl, {
       headers: {
         'User-Agent': 'Twitterbot/1.0'
-      }
+      },
+      redirect: 'follow', // Explicitly follow redirects
+      follow: 20 // Maximum number of redirects to follow
     });
 
     if (!response.ok) {
@@ -100,6 +102,9 @@ app.get('/og', async (req, res) => {
         error: `Failed to fetch URL: ${response.statusText}`
       });
     }
+
+    // Get the final URL after redirects
+    const finalUrl = response.url;
 
     // Get the HTML content
     const html = await response.text();
@@ -111,7 +116,7 @@ app.get('/og', async (req, res) => {
     const metadata = {
       title: $('meta[property="og:title"]').attr('content'),
       description: $('meta[property="og:description"]').attr('content'),
-      url: $('meta[property="og:url"]').attr('content') || targetUrl,
+      url: $('meta[property="og:url"]').attr('content') || finalUrl || targetUrl,
       image: $('meta[property="og:image"]').attr('content'),
       imageWidth: $('meta[property="og:image:width"]').attr('content'),
       imageHeight: $('meta[property="og:image:height"]').attr('content')
@@ -120,6 +125,18 @@ app.get('/og', async (req, res) => {
     // Fallback to standard metadata if OpenGraph not available
     if (!metadata.title) metadata.title = $('title').text();
     if (!metadata.description) metadata.description = $('meta[name="description"]').attr('content');
+    
+    // Check for meta refresh redirect that fetch won't follow
+    const metaRefresh = $('meta[http-equiv="refresh"]').attr('content');
+    if (metaRefresh && !metadata.title && !metadata.description) {
+      // Extract URL from meta refresh (format: "0;URL=http://example.com")
+      const refreshMatch = metaRefresh.match(/url=(.+)/i);
+      if (refreshMatch) {
+        const refreshUrl = refreshMatch[1].trim();
+        console.log(`Meta refresh detected, following to: ${refreshUrl}`);
+        // You might want to recursively fetch here, but for now we'll just note it
+      }
+    }
 
     // Cache the result for 1 hour
     cache.set(cacheKey, metadata);
