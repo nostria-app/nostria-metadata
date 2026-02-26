@@ -8,18 +8,116 @@ useWebSocketImplementation(WebSocket);
 class NostrService {
   constructor() {
     this.pool = null;
-    this.defaultRelays = process.env.DEFAULT_RELAYS
-      ? process.env.DEFAULT_RELAYS.split(',')
-      : ['wss://relay.damus.io', 'wss://relay.nostr.band', 'wss://nos.lol'];
-    this.timeout = parseInt(process.env.RELAY_TIMEOUT || '3000');
+
+    this.defaultEventRelays = this.parseRelayList(
+      process.env.DEFAULT_EVENT_RELAYS || process.env.DEFAULT_RELAYS,
+      [
+        'wss://relay.damus.io',
+        'wss://nos.lol',
+        'wss://relay.primal.net',
+        'wss://premium.primal.net',
+        'wss://relay.snort.social',
+        'wss://nostr.wine',
+        'wss://relay.nos.social',
+        'wss://nostr.mom',
+        'wss://relay.mostr.pub',
+      ]
+    );
+
+    this.defaultProfileRelays = this.parseRelayList(
+      process.env.DEFAULT_PROFILE_RELAYS || process.env.DEFAULT_RELAYS,
+      [
+        'wss://relay.damus.io',
+        'wss://nos.lol',
+        'wss://relay.nos.social',
+        'wss://relay.snort.social',
+        'wss://relay.primal.net',
+        'wss://premium.primal.net',
+        'wss://nostr.wine',
+        'wss://nostr.mom',
+        'wss://relay.mostr.pub',
+      ]
+    );
+
+    this.timeout = Number.parseInt(process.env.RELAY_TIMEOUT || '3000', 10);
+    this.profileTimeout = Number.parseInt(process.env.PROFILE_RELAY_TIMEOUT || String(this.timeout), 10);
+    this.retryTimeout = Number.parseInt(process.env.RELAY_RETRY_TIMEOUT || '1800', 10);
+    this.profileCacheTtlMs = Number.parseInt(process.env.PROFILE_CACHE_TTL_MS || '60000', 10);
+    this.profileCache = new Map();
+  }
+
+  parseRelayList(relaysString, fallbackRelays) {
+    const source = relaysString ? relaysString.split(',') : fallbackRelays;
+    return [...new Set(source
+      .map((relay) => relay.trim())
+      .filter((relay) => relay.startsWith('wss://') || relay.startsWith('ws://')),
+    )];
+  }
+
+  getAllKnownRelays() {
+    return [...new Set([...this.defaultEventRelays, ...this.defaultProfileRelays])];
+  }
+
+  buildRelayList(relayHints = [], type = 'event') {
+    const baseRelays = type === 'profile' ? this.defaultProfileRelays : this.defaultEventRelays;
+    return [...new Set([...relayHints, ...baseRelays])];
+  }
+
+  getCachedProfile(pubkey) {
+    const cached = this.profileCache.get(pubkey);
+    if (!cached) {
+      return null;
+    }
+
+    if (Date.now() - cached.timestamp > this.profileCacheTtlMs) {
+      this.profileCache.delete(pubkey);
+      return null;
+    }
+
+    return cached.value;
+  }
+
+  setCachedProfile(pubkey, profile) {
+    this.profileCache.set(pubkey, {
+      value: profile,
+      timestamp: Date.now(),
+    });
+  }
+
+  async fetchFromRelays(relays, filter, timeoutMs) {
+    return this.pool.get(
+      relays,
+      filter,
+      {
+        timeout: timeoutMs,
+      }
+    );
+  }
+
+  async fetchWithRetry(relays, filter, timeoutMs, contextLabel) {
+    const firstTry = await this.fetchFromRelays(relays, filter, timeoutMs);
+    if (firstTry) {
+      return firstTry;
+    }
+
+    const allRelays = this.getAllKnownRelays();
+    const retryRelays = [...new Set([...relays, ...allRelays])];
+
+    if (retryRelays.length <= relays.length) {
+      return null;
+    }
+
+    console.warn(`${contextLabel} not found on first relay set, retrying with expanded relay set (${retryRelays.length} relays)`);
+    return this.fetchFromRelays(retryRelays, filter, this.retryTimeout);
   }
 
   initialize() {
     if (this.pool) {
-      this.pool.close(this.defaultRelays);
+      this.pool.close(this.getAllKnownRelays());
     }
     this.pool = new SimplePool();
-    console.log(`Initialized Nostr pool with relays: ${this.defaultRelays.join(', ')}`);
+    console.log(`Initialized Nostr pool with event relays: ${this.defaultEventRelays.join(', ')}`);
+    console.log(`Initialized Nostr pool with profile relays: ${this.defaultProfileRelays.join(', ')}`);
   }
 
   /**
@@ -33,18 +131,20 @@ class NostrService {
       this.initialize();
     }
 
-    // Combine default relays with relay hints
-    const relays = [...new Set([...this.defaultRelays, ...relayHints])];
+    if (!eventId) {
+      throw new Error('eventId is required');
+    }
+
+    const relays = this.buildRelayList(relayHints, 'event');
 
     try {
-      const event = await this.pool.get(
+      const event = await this.fetchWithRetry(
         relays,
         {
           ids: [eventId]
         },
-        {
-          timeout: this.timeout
-        }
+        this.timeout,
+        `Event ${eventId}`
       );
 
       if (!event) {
@@ -53,7 +153,7 @@ class NostrService {
       }
 
       // If this is a note, also get the author's profile
-      if (event.kind === 1) {
+      if (event.pubkey) {
         try {
           const authorProfile = await this.getProfile(event.pubkey, relayHints);
           if (authorProfile) {
@@ -83,20 +183,27 @@ class NostrService {
       this.initialize();
     }
 
-    // Combine default relays with relay hints
-    const relays = [...new Set([...this.defaultRelays, ...relayHints])];
+    if (!pubkey) {
+      throw new Error('pubkey is required');
+    }
+
+    const cachedProfile = this.getCachedProfile(pubkey);
+    if (cachedProfile) {
+      return cachedProfile;
+    }
+
+    const relays = this.buildRelayList(relayHints, 'profile');
 
     try {
       // Get the most recent kind 0 event (metadata) for this pubkey
-      const profileEvent = await this.pool.get(
+      const profileEvent = await this.fetchWithRetry(
         relays,
         {
           kinds: [0],
           authors: [pubkey]
         },
-        {
-          timeout: this.timeout
-        }
+        this.profileTimeout,
+        `Profile ${pubkey}`
       );
 
       if (!profileEvent) {
@@ -114,7 +221,9 @@ class NostrService {
       const result = {
         ...profileEvent,
         profile: profileData
-      }
+      };
+
+      this.setCachedProfile(pubkey, result);
 
       // Return both the raw event and the parsed profile data
       return result;
@@ -129,9 +238,10 @@ class NostrService {
    */
   close() {
     if (this.pool) {
-      this.pool.close(this.defaultRelays);
+      this.pool.close(this.getAllKnownRelays());
       this.pool = null;
     }
+    this.profileCache.clear();
   }
 
   /**
@@ -147,8 +257,11 @@ class NostrService {
       this.initialize();
     }
 
-    // Combine default relays with relay hints
-    const relays = [...new Set([...this.defaultRelays, ...relayHints])];
+    if (!author || !identifier || !kind) {
+      throw new Error('author, identifier and kind are required');
+    }
+
+    const relays = this.buildRelayList(relayHints, 'event');
 
     try {
       const filter = {
@@ -157,33 +270,31 @@ class NostrService {
         [`#d`]: [identifier]
       };
 
-      const event = await this.pool.get(
+      const authorProfilePromise = this.getProfile(author, relayHints).catch((error) => {
+        console.warn(`Could not fetch author profile for article ${author}:${identifier}:${kind}:`, error.message);
+        return null;
+      });
+
+      const event = await this.fetchWithRetry(
         relays,
         filter,
-        {
-          timeout: this.timeout
-        }
+        this.timeout,
+        `Article ${author}:${identifier}:${kind}`
       );
 
       if (!event) {
-        console.warn(`Event ${eventId} not found`);
+        console.warn(`Article ${author}:${identifier}:${kind} not found`);
         return null;
       }
 
-      // If this is a article, also get the author's profile
-      try {
-        const authorProfile = await this.getProfile(author, relayHints);
-        if (authorProfile) {
-          // Add author profile information to the event
-          event.author = authorProfile;
-        }
-      } catch (error) {
-        console.warn(`Could not fetch author profile for event ${eventId}:`, error.message);
+      const authorProfile = await authorProfilePromise;
+      if (authorProfile) {
+        event.author = authorProfile;
       }
 
       return event;
     } catch (error) {
-      console.error(`Error fetching event ${eventId}:`, error);
+      console.error(`Error fetching article ${author}:${identifier}:${kind}:`, error);
       throw error;
     }
   }
