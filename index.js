@@ -13,6 +13,16 @@ const port = process.env.PORT || 3000;
 const ogCacheTtlMs = Number.parseInt(process.env.OG_CACHE_TTL_MS || '3600000', 10);
 const ogErrorCacheTtlMs = Number.parseInt(process.env.OG_ERROR_CACHE_TTL_MS || '300000', 10);
 const ogRequestTimeoutMs = Number.parseInt(process.env.OG_REQUEST_TIMEOUT_MS || '4000', 10);
+const ignoredOgDomainList = [
+  'andrzej.btc',
+];
+const ignoredOgDomains = new Set([
+  ...ignoredOgDomainList,
+  ...(process.env.OG_IGNORED_DOMAINS || '')
+    .split(',')
+    .map((domain) => domain.trim().toLowerCase())
+    .filter(Boolean),
+]);
 
 const axiosClient = axios.create({
   httpAgent: new http.Agent({ keepAlive: true }),
@@ -81,6 +91,22 @@ function normalizeTargetUrl(rawUrl) {
     return parsedUrl.toString();
   } catch (error) {
     return null;
+  }
+}
+
+function isIgnoredOgDomain(targetUrl) {
+  try {
+    const hostname = new URL(targetUrl).hostname.toLowerCase().replace(/\.+$/, '');
+
+    for (const ignoredDomain of ignoredOgDomains) {
+      if (hostname === ignoredDomain || hostname.endsWith(`.${ignoredDomain}`)) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch (error) {
+    return false;
   }
 }
 
@@ -273,6 +299,11 @@ app.get('/og', async (req, res) => {
         error: 'Invalid URL. URL must be provided as a query parameter and start with http:// or https://',
         example: '/og?url=https://example.com'
       });
+    }
+
+    if (isIgnoredOgDomain(targetUrl)) {
+      console.log(`Ignoring OpenGraph fetch for blocked domain: ${targetUrl}`);
+      return res.status(204).end();
     }
 
     // Check cache first
