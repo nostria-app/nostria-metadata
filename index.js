@@ -5,9 +5,18 @@ const { nip19 } = require('nostr-tools');
 const nostrService = require('./services/nostrService');
 const cheerio = require('cheerio');
 const axios = require('axios');
+const http = require('http');
+const https = require('https');
 
 const app = express();
 const port = process.env.PORT || 3000;
+const ogCacheTtlMs = Number.parseInt(process.env.OG_CACHE_TTL_MS || '3600000', 10);
+const ogErrorCacheTtlMs = Number.parseInt(process.env.OG_ERROR_CACHE_TTL_MS || '300000', 10);
+
+const axiosClient = axios.create({
+  httpAgent: new http.Agent({ keepAlive: true }),
+  httpsAgent: new https.Agent({ keepAlive: true }),
+});
 
 // In-memory cache with TTL
 class MemoryCache {
@@ -53,6 +62,175 @@ class MemoryCache {
 
 // Create cache instance
 const cache = new MemoryCache();
+const inFlightRequests = new Map();
+
+function normalizeTargetUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') {
+    return null;
+  }
+
+  const trimmedUrl = rawUrl.trim().replace(/[\s,]+$/g, '');
+  if (!(trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://'))) {
+    return null;
+  }
+
+  try {
+    const parsedUrl = new URL(trimmedUrl);
+    parsedUrl.hash = '';
+    return parsedUrl.toString();
+  } catch (error) {
+    return null;
+  }
+}
+
+function sendOgResponse(res, response) {
+  if (response.ok) {
+    return res.json(response.body);
+  }
+
+  return res.status(response.status).json(response.body);
+}
+
+function cacheOgResponse(cacheKey, response, ttl) {
+  cache.set(cacheKey, response, ttl);
+
+  const resolvedUrl = response.cacheAliases?.[0];
+  if (!resolvedUrl) {
+    return;
+  }
+
+  const normalizedResolvedUrl = normalizeTargetUrl(resolvedUrl);
+  if (!normalizedResolvedUrl) {
+    console.warn(`Could not normalize resolved URL for cache: ${resolvedUrl}`);
+    return;
+  }
+
+  const resolvedCacheKey = `og:${normalizedResolvedUrl}`;
+  if (resolvedCacheKey !== cacheKey) {
+    cache.set(resolvedCacheKey, response, ttl);
+  }
+}
+
+async function fetchOpenGraphMetadata(targetUrl) {
+  console.log(`Fetching OpenGraph data for: ${targetUrl}`);
+
+  let response;
+  let html;
+  let finalUrl = targetUrl;
+
+  try {
+    // Use axios which handles Cloudflare better than fetch
+    response = await axiosClient.get(targetUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'max-age=0',
+        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1'
+      },
+      maxRedirects: 20,
+      timeout: 15000,
+      validateStatus: function (status) {
+        return status >= 200 && status < 500; // Accept all non-5xx responses
+      }
+    });
+
+    html = response.data;
+    finalUrl = response.request.res?.responseUrl || targetUrl;
+
+    console.log(`Successfully fetched ${targetUrl}, status: ${response.status}, final URL: ${finalUrl}`);
+
+    if (response.status === 403) {
+      console.error(`Got 403 from ${targetUrl}`);
+      return {
+        ok: false,
+        status: 403,
+        body: {
+          error: 'The target server is blocking this request (Cloudflare protection detected)',
+          statusCode: 403,
+          url: targetUrl,
+          suggestion: 'This URL is protected by Cloudflare. The content cannot be fetched server-side.'
+        },
+        cacheAliases: [finalUrl],
+      };
+    }
+
+    if (response.status >= 400) {
+      return {
+        ok: false,
+        status: response.status,
+        body: {
+          error: `Failed to fetch URL: ${response.statusText}`,
+          statusCode: response.status,
+          url: targetUrl,
+        },
+        cacheAliases: [finalUrl],
+      };
+    }
+  } catch (error) {
+    console.error(`Error fetching ${targetUrl}:`, error.message);
+    if (error.response) {
+      return {
+        ok: false,
+        status: error.response.status,
+        body: {
+          error: `Failed to fetch URL: ${error.response.statusText || error.message}`,
+          statusCode: error.response.status,
+          url: targetUrl,
+        },
+        cacheAliases: [finalUrl],
+      };
+    }
+
+    throw error;
+  }
+
+  // Parse the HTML
+  const $ = cheerio.load(html);
+
+  // Extract OpenGraph metadata
+  const metadata = {
+    title: $('meta[property="og:title"]').attr('content'),
+    description: $('meta[property="og:description"]').attr('content'),
+    url: $('meta[property="og:url"]').attr('content') || finalUrl || targetUrl,
+    image: $('meta[property="og:image"]').attr('content'),
+    imageWidth: $('meta[property="og:image:width"]').attr('content'),
+    imageHeight: $('meta[property="og:image:height"]').attr('content')
+  };
+
+  // Fallback to standard metadata if OpenGraph not available
+  if (!metadata.title) metadata.title = $('title').text();
+  if (!metadata.description) metadata.description = $('meta[name="description"]').attr('content');
+
+  // Check for meta refresh redirect that fetch won't follow
+  const metaRefresh = $('meta[http-equiv="refresh"]').attr('content');
+  if (metaRefresh && !metadata.title && !metadata.description) {
+    // Extract URL from meta refresh (format: "0;URL=http://example.com")
+    const refreshMatch = metaRefresh.match(/url=(.+)/i);
+    if (refreshMatch) {
+      const refreshUrl = refreshMatch[1].trim();
+      console.log(`Meta refresh detected, following to: ${refreshUrl}`);
+      // You might want to recursively fetch here, but for now we'll just note it
+    }
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      ...metadata,
+    },
+    cacheAliases: [finalUrl, metadata.url],
+  };
+}
 
 // Clean up expired cache entries every 10 minutes
 setInterval(() => {
@@ -73,7 +251,7 @@ app.get('/health', (req, res) => {
 // OpenGraph metadata endpoint
 app.get('/og', async (req, res) => {
   try {
-    const targetUrl = req.query.url;
+    const targetUrl = normalizeTargetUrl(req.query.url);
 
     // Basic validation of the URL
     if (!targetUrl || !(targetUrl.startsWith('http://') || targetUrl.startsWith('https://'))) {
@@ -87,107 +265,26 @@ app.get('/og', async (req, res) => {
     const cacheKey = `og:${targetUrl}`;
     const cachedResult = cache.get(cacheKey);
     if (cachedResult) {
-      return res.json(cachedResult);
+      return sendOgResponse(res, cachedResult);
     }
 
-    console.log(`Fetching OpenGraph data for: ${targetUrl}`);
-
-    let response;
-    let html;
-    let finalUrl = targetUrl;
-
-    try {
-      // Use axios which handles Cloudflare better than fetch
-      response = await axios.get(targetUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Cache-Control': 'max-age=0',
-          'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120"',
-          'Sec-Ch-Ua-Mobile': '?0',
-          'Sec-Ch-Ua-Platform': '"Windows"',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none',
-          'Sec-Fetch-User': '?1',
-          'Upgrade-Insecure-Requests': '1'
-        },
-        maxRedirects: 20,
-        timeout: 15000,
-        validateStatus: function (status) {
-          return status >= 200 && status < 500; // Accept all non-5xx responses
-        }
-      });
-
-      html = response.data;
-      finalUrl = response.request.res?.responseUrl || targetUrl;
-      
-      console.log(`Successfully fetched ${targetUrl}, status: ${response.status}, final URL: ${finalUrl}`);
-
-      if (response.status === 403) {
-        console.error(`Got 403 from ${targetUrl}`);
-        return res.status(403).json({
-          error: 'The target server is blocking this request (Cloudflare protection detected)',
-          statusCode: 403,
-          url: targetUrl,
-          suggestion: 'This URL is protected by Cloudflare. The content cannot be fetched server-side.'
+    let requestPromise = inFlightRequests.get(cacheKey);
+    if (!requestPromise) {
+      requestPromise = fetchOpenGraphMetadata(targetUrl)
+        .then((result) => {
+          const ttl = result.ok ? ogCacheTtlMs : ogErrorCacheTtlMs;
+          cacheOgResponse(cacheKey, result, ttl);
+          return result;
+        })
+        .finally(() => {
+          inFlightRequests.delete(cacheKey);
         });
-      }
 
-      if (response.status >= 400) {
-        return res.status(response.status).json({
-          error: `Failed to fetch URL: ${response.statusText}`,
-          statusCode: response.status,
-          url: targetUrl
-        });
-      }
-    } catch (error) {
-      console.error(`Error fetching ${targetUrl}:`, error.message);
-      if (error.response) {
-        return res.status(error.response.status).json({
-          error: `Failed to fetch URL: ${error.response.statusText || error.message}`,
-          statusCode: error.response.status,
-          url: targetUrl
-        });
-      }
-      throw error;
+      inFlightRequests.set(cacheKey, requestPromise);
     }
 
-    // Parse the HTML
-    const $ = cheerio.load(html);
-
-    // Extract OpenGraph metadata
-    const metadata = {
-      title: $('meta[property="og:title"]').attr('content'),
-      description: $('meta[property="og:description"]').attr('content'),
-      url: $('meta[property="og:url"]').attr('content') || finalUrl || targetUrl,
-      image: $('meta[property="og:image"]').attr('content'),
-      imageWidth: $('meta[property="og:image:width"]').attr('content'),
-      imageHeight: $('meta[property="og:image:height"]').attr('content')
-    };
-
-    // Fallback to standard metadata if OpenGraph not available
-    if (!metadata.title) metadata.title = $('title').text();
-    if (!metadata.description) metadata.description = $('meta[name="description"]').attr('content');
-    
-    // Check for meta refresh redirect that fetch won't follow
-    const metaRefresh = $('meta[http-equiv="refresh"]').attr('content');
-    if (metaRefresh && !metadata.title && !metadata.description) {
-      // Extract URL from meta refresh (format: "0;URL=http://example.com")
-      const refreshMatch = metaRefresh.match(/url=(.+)/i);
-      if (refreshMatch) {
-        const refreshUrl = refreshMatch[1].trim();
-        console.log(`Meta refresh detected, following to: ${refreshUrl}`);
-        // You might want to recursively fetch here, but for now we'll just note it
-      }
-    }
-
-    // Cache the result for 1 hour
-    cache.set(cacheKey, metadata);
-
-    return res.json(metadata);
+    const result = await requestPromise;
+    return sendOgResponse(res, result);
   } catch (error) {
     console.error('OpenGraph extraction error:', error);
     res.status(500).json({ error: 'Failed to extract OpenGraph metadata', details: error.message });
