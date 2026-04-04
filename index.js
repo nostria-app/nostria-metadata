@@ -15,6 +15,7 @@ const ogErrorCacheTtlMs = Number.parseInt(process.env.OG_ERROR_CACHE_TTL_MS || '
 const ogRequestTimeoutMs = Number.parseInt(process.env.OG_REQUEST_TIMEOUT_MS || '4000', 10);
 const ignoredOgDomainList = [
   'andrzej.btc',
+  'core.excludesfile',
   'necessary.so',
 ];
 const ignoredOgDomains = new Set([
