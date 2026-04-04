@@ -16,11 +16,20 @@ const ogRequestTimeoutMs = Number.parseInt(process.env.OG_REQUEST_TIMEOUT_MS || 
 const ignoredOgDomainList = [
   'andrzej.btc',
   'necessary.so',
-  'reddit.com',
 ];
 const ignoredOgDomains = new Set([
   ...ignoredOgDomainList,
   ...(process.env.OG_IGNORED_DOMAINS || '')
+    .split(',')
+    .map((domain) => domain.trim().toLowerCase())
+    .filter(Boolean),
+]);
+const metadataBypassOgDomainList = [
+  'reddit.com',
+];
+const metadataBypassOgDomains = new Set([
+  ...metadataBypassOgDomainList,
+  ...(process.env.OG_METADATA_BYPASS_DOMAINS || '')
     .split(',')
     .map((domain) => domain.trim().toLowerCase())
     .filter(Boolean),
@@ -97,11 +106,19 @@ function normalizeTargetUrl(rawUrl) {
 }
 
 function isIgnoredOgDomain(targetUrl) {
+  return matchesDomainList(targetUrl, ignoredOgDomains);
+}
+
+function shouldBypassOgMetadataFetch(targetUrl) {
+  return matchesDomainList(targetUrl, metadataBypassOgDomains);
+}
+
+function matchesDomainList(targetUrl, domainList) {
   try {
     const hostname = new URL(targetUrl).hostname.toLowerCase().replace(/\.+$/, '');
 
-    for (const ignoredDomain of ignoredOgDomains) {
-      if (hostname === ignoredDomain || hostname.endsWith(`.${ignoredDomain}`)) {
+    for (const domain of domainList) {
+      if (hostname === domain || hostname.endsWith(`.${domain}`)) {
         return true;
       }
     }
@@ -110,6 +127,17 @@ function isIgnoredOgDomain(targetUrl) {
   } catch (error) {
     return false;
   }
+}
+
+function buildBasicOgResponse(targetUrl) {
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      url: targetUrl,
+    },
+    cacheAliases: [targetUrl],
+  };
 }
 
 function sendOgResponse(res, response) {
@@ -306,6 +334,14 @@ app.get('/og', async (req, res) => {
     if (isIgnoredOgDomain(targetUrl)) {
       console.log(`Ignoring OpenGraph fetch for blocked domain: ${targetUrl}`);
       return res.status(204).end();
+    }
+
+    if (shouldBypassOgMetadataFetch(targetUrl)) {
+      console.log(`Bypassing OpenGraph metadata fetch for domain: ${targetUrl}`);
+      const cacheKey = `og:${targetUrl}`;
+      const result = buildBasicOgResponse(targetUrl);
+      cacheOgResponse(cacheKey, result, ogCacheTtlMs);
+      return sendOgResponse(res, result);
     }
 
     // Check cache first
