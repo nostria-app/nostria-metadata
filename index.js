@@ -12,6 +12,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 const ogCacheTtlMs = Number.parseInt(process.env.OG_CACHE_TTL_MS || '3600000', 10);
 const ogErrorCacheTtlMs = Number.parseInt(process.env.OG_ERROR_CACHE_TTL_MS || '300000', 10);
+const ogRequestTimeoutMs = Number.parseInt(process.env.OG_REQUEST_TIMEOUT_MS || '4000', 10);
 
 const axiosClient = axios.create({
   httpAgent: new http.Agent({ keepAlive: true }),
@@ -137,7 +138,7 @@ async function fetchOpenGraphMetadata(targetUrl) {
         'Upgrade-Insecure-Requests': '1'
       },
       maxRedirects: 20,
-      timeout: 15000,
+      timeout: ogRequestTimeoutMs,
       validateStatus: function (status) {
         return status >= 200 && status < 500; // Accept all non-5xx responses
       }
@@ -177,6 +178,19 @@ async function fetchOpenGraphMetadata(targetUrl) {
     }
   } catch (error) {
     console.error(`Error fetching ${targetUrl}:`, error.message);
+    if (error.code === 'ECONNABORTED') {
+      return {
+        ok: false,
+        status: 504,
+        body: {
+          error: `Timed out fetching URL after ${ogRequestTimeoutMs}ms`,
+          statusCode: 504,
+          url: targetUrl,
+        },
+        cacheAliases: [finalUrl],
+      };
+    }
+
     if (error.response) {
       return {
         ok: false,
