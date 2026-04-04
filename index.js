@@ -16,6 +16,7 @@ const ogRequestTimeoutMs = Number.parseInt(process.env.OG_REQUEST_TIMEOUT_MS || 
 const ignoredOgDomainList = [
   'andrzej.btc',
   'necessary.so',
+  'reddit.com',
 ];
 const ignoredOgDomains = new Set([
   ...ignoredOgDomainList,
