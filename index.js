@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { nip19 } = require('nostr-tools');
+const { marked } = require('marked');
 const nostrService = require('./services/nostrService');
 const cheerio = require('cheerio');
 const axios = require('axios');
@@ -106,6 +107,28 @@ function normalizeTargetUrl(rawUrl) {
   }
 }
 
+function parseBooleanQueryParam(value, defaultValue = true) {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  const normalizedValue = String(value).trim().toLowerCase();
+
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalizedValue)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalizedValue)) {
+    return false;
+  }
+
+  return defaultValue;
+}
+
 function isIgnoredOgDomain(targetUrl) {
   return matchesDomainList(targetUrl, ignoredOgDomains);
 }
@@ -149,6 +172,14 @@ function sendOgResponse(res, response) {
   return res.status(response.status).json(response.body);
 }
 
+function sendMarkdownResponse(res, response) {
+  if (response.ok) {
+    return res.type('text/markdown; charset=utf-8').send(response.body);
+  }
+
+  return res.status(response.status).json(response.body);
+}
+
 function cacheOgResponse(cacheKey, response, ttl) {
   cache.set(cacheKey, response, ttl);
 
@@ -163,21 +194,39 @@ function cacheOgResponse(cacheKey, response, ttl) {
     return;
   }
 
-  const resolvedCacheKey = `og:${normalizedResolvedUrl}`;
+  const cacheKeyPrefix = cacheKey.includes(':') ? cacheKey.slice(0, cacheKey.indexOf(':')) : cacheKey;
+  const resolvedCacheKey = `${cacheKeyPrefix}:${normalizedResolvedUrl}`;
   if (resolvedCacheKey !== cacheKey) {
     cache.set(resolvedCacheKey, response, ttl);
   }
 }
 
-async function fetchOpenGraphMetadata(targetUrl) {
-  console.log(`Fetching OpenGraph data for: ${targetUrl}`);
+function buildUrlFetchErrorResponse(targetUrl, status, message, finalUrl = targetUrl, suggestion) {
+  const body = {
+    error: message,
+    statusCode: status,
+    url: targetUrl,
+  };
+
+  if (suggestion) {
+    body.suggestion = suggestion;
+  }
+
+  return {
+    ok: false,
+    status,
+    body,
+    cacheAliases: [finalUrl],
+  };
+}
+
+async function fetchUrlDocument(targetUrl) {
+  console.log(`Fetching document for: ${targetUrl}`);
 
   let response;
-  let html;
   let finalUrl = targetUrl;
 
   try {
-    // Use axios which handles Cloudflare better than fetch
     response = await axiosClient.get(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -197,77 +246,69 @@ async function fetchOpenGraphMetadata(targetUrl) {
       maxRedirects: 20,
       timeout: ogRequestTimeoutMs,
       validateStatus: function (status) {
-        return status >= 200 && status < 500; // Accept all non-5xx responses
+        return status >= 200 && status < 500;
       }
     });
 
-    html = response.data;
     finalUrl = response.request.res?.responseUrl || targetUrl;
 
     console.log(`Successfully fetched ${targetUrl}, status: ${response.status}, final URL: ${finalUrl}`);
 
     if (response.status === 403) {
       console.error(`Got 403 from ${targetUrl}`);
-      return {
-        ok: false,
-        status: 403,
-        body: {
-          error: 'The target server is blocking this request (Cloudflare protection detected)',
-          statusCode: 403,
-          url: targetUrl,
-          suggestion: 'This URL is protected by Cloudflare. The content cannot be fetched server-side.'
-        },
-        cacheAliases: [finalUrl],
-      };
+      return buildUrlFetchErrorResponse(
+        targetUrl,
+        403,
+        'The target server is blocking this request (Cloudflare protection detected)',
+        finalUrl,
+        'This URL is protected by Cloudflare. The content cannot be fetched server-side.'
+      );
     }
 
     if (response.status >= 400) {
-      return {
-        ok: false,
-        status: response.status,
-        body: {
-          error: `Failed to fetch URL: ${response.statusText}`,
-          statusCode: response.status,
-          url: targetUrl,
-        },
-        cacheAliases: [finalUrl],
-      };
+      return buildUrlFetchErrorResponse(
+        targetUrl,
+        response.status,
+        `Failed to fetch URL: ${response.statusText}`,
+        finalUrl
+      );
     }
+
+    return {
+      ok: true,
+      status: response.status,
+      html: typeof response.data === 'string' ? response.data : String(response.data || ''),
+      finalUrl,
+      cacheAliases: [finalUrl],
+    };
   } catch (error) {
     console.error(`Error fetching ${targetUrl}:`, error.message);
+
     if (error.code === 'ECONNABORTED') {
-      return {
-        ok: false,
-        status: 504,
-        body: {
-          error: `Timed out fetching URL after ${ogRequestTimeoutMs}ms`,
-          statusCode: 504,
-          url: targetUrl,
-        },
-        cacheAliases: [finalUrl],
-      };
+      return buildUrlFetchErrorResponse(
+        targetUrl,
+        504,
+        `Timed out fetching URL after ${ogRequestTimeoutMs}ms`,
+        finalUrl
+      );
     }
 
     if (error.response) {
-      return {
-        ok: false,
-        status: error.response.status,
-        body: {
-          error: `Failed to fetch URL: ${error.response.statusText || error.message}`,
-          statusCode: error.response.status,
-          url: targetUrl,
-        },
-        cacheAliases: [finalUrl],
-      };
+      return buildUrlFetchErrorResponse(
+        targetUrl,
+        error.response.status,
+        `Failed to fetch URL: ${error.response.statusText || error.message}`,
+        finalUrl
+      );
     }
 
     throw error;
   }
+}
 
-  // Parse the HTML
+function extractOpenGraphMetadataFromHtml(html, targetUrl, finalUrl) {
   const $ = cheerio.load(html);
 
-  // Extract OpenGraph metadata
   const metadata = {
     title: $('meta[property="og:title"]').attr('content'),
     description: $('meta[property="og:description"]').attr('content'),
@@ -277,21 +318,378 @@ async function fetchOpenGraphMetadata(targetUrl) {
     imageHeight: $('meta[property="og:image:height"]').attr('content')
   };
 
-  // Fallback to standard metadata if OpenGraph not available
   if (!metadata.title) metadata.title = $('title').text();
   if (!metadata.description) metadata.description = $('meta[name="description"]').attr('content');
 
-  // Check for meta refresh redirect that fetch won't follow
   const metaRefresh = $('meta[http-equiv="refresh"]').attr('content');
   if (metaRefresh && !metadata.title && !metadata.description) {
-    // Extract URL from meta refresh (format: "0;URL=http://example.com")
     const refreshMatch = metaRefresh.match(/url=(.+)/i);
     if (refreshMatch) {
       const refreshUrl = refreshMatch[1].trim();
       console.log(`Meta refresh detected, following to: ${refreshUrl}`);
-      // You might want to recursively fetch here, but for now we'll just note it
     }
   }
+
+  return metadata;
+}
+
+function normalizeWhitespace(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value
+    .replace(/\u00a0/g, ' ')
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function escapeMarkdownText(value) {
+  return normalizeWhitespace(value).replace(/\\/g, '\\\\').replace(/([`*_\[\]<>])/g, '\\$1');
+}
+
+function absolutizeUrl(url, baseUrl) {
+  if (!url) {
+    return '';
+  }
+
+  try {
+    return new URL(url, baseUrl).toString();
+  } catch (error) {
+    return url;
+  }
+}
+
+function selectReadableContentRoot($) {
+  const candidates = [
+    'article',
+    'main',
+    '[role="main"]',
+    '.article-content',
+    '.article-body',
+    '.entry-content',
+    '.post-content',
+    '.content',
+    '#content',
+    '.main-content',
+    '.markdown-body',
+    'body',
+  ];
+
+  let bestNode = $('body').first();
+  let bestScore = 0;
+
+  for (const selector of candidates) {
+    $(selector).each((_, element) => {
+      const textLength = normalizeWhitespace($(element).text()).length;
+      if (textLength > bestScore) {
+        bestScore = textLength;
+        bestNode = $(element);
+      }
+    });
+  }
+
+  return bestNode;
+}
+
+function renderInlineMarkdown($, nodes, baseUrl) {
+  const parts = [];
+
+  for (const node of nodes) {
+    if (!node) {
+      continue;
+    }
+
+    if (node.type === 'text') {
+      const text = node.data.replace(/\s+/g, ' ');
+      if (text.trim()) {
+        parts.push(escapeMarkdownText(text));
+      }
+      continue;
+    }
+
+    if (node.type !== 'tag') {
+      continue;
+    }
+
+    const tagName = node.name.toLowerCase();
+
+    if (tagName === 'br') {
+      parts.push('  \n');
+      continue;
+    }
+
+    if (tagName === 'code') {
+      const codeText = normalizeWhitespace($(node).text());
+      if (codeText) {
+        parts.push(`\`${codeText.replace(/`/g, '\\`')}\``);
+      }
+      continue;
+    }
+
+    if (tagName === 'a') {
+      const href = absolutizeUrl($(node).attr('href'), baseUrl);
+      const label = renderInlineMarkdown($, $(node).contents().toArray(), baseUrl) || escapeMarkdownText($(node).text()) || href;
+      parts.push(href ? `[${label}](${href})` : label);
+      continue;
+    }
+
+    if (tagName === 'strong' || tagName === 'b') {
+      const text = renderInlineMarkdown($, $(node).contents().toArray(), baseUrl);
+      if (text) {
+        parts.push(`**${text}**`);
+      }
+      continue;
+    }
+
+    if (tagName === 'em' || tagName === 'i') {
+      const text = renderInlineMarkdown($, $(node).contents().toArray(), baseUrl);
+      if (text) {
+        parts.push(`*${text}*`);
+      }
+      continue;
+    }
+
+    if (tagName === 'img') {
+      const src = absolutizeUrl($(node).attr('src'), baseUrl);
+      const alt = escapeMarkdownText($(node).attr('alt') || 'Image');
+      if (src) {
+        parts.push(`![${alt}](${src})`);
+      }
+      continue;
+    }
+
+    const text = renderInlineMarkdown($, $(node).contents().toArray(), baseUrl);
+    if (text) {
+      parts.push(text);
+    }
+  }
+
+  return parts.join('').replace(/[ \t]{2,}/g, ' ').trim();
+}
+
+function renderListMarkdown($, listNode, baseUrl, depth = 0) {
+  const ordered = listNode.name.toLowerCase() === 'ol';
+  const items = $(listNode).children('li').toArray();
+  const lines = [];
+
+  items.forEach((itemNode, index) => {
+    const marker = ordered ? `${index + 1}. ` : '- ';
+    const indent = '  '.repeat(depth);
+    const itemClone = $(itemNode).clone();
+    itemClone.children('ul, ol').remove();
+    const itemText = renderInlineMarkdown($, itemClone.contents().toArray(), baseUrl);
+    const nestedBlocks = $(itemNode)
+      .children('ul, ol')
+      .toArray()
+      .map((nestedList) => renderListMarkdown($, nestedList, baseUrl, depth + 1))
+      .filter(Boolean)
+      .join('\n');
+
+    if (itemText) {
+      lines.push(`${indent}${marker}${itemText}`);
+    }
+
+    if (nestedBlocks) {
+      lines.push(nestedBlocks);
+    }
+  });
+
+  return lines.join('\n').trim();
+}
+
+function renderBlockMarkdown($, nodes, baseUrl, depth = 0) {
+  const blocks = [];
+
+  for (const node of nodes) {
+    if (!node) {
+      continue;
+    }
+
+    if (node.type === 'text') {
+      const text = normalizeWhitespace(node.data);
+      if (text) {
+        blocks.push(escapeMarkdownText(text));
+      }
+      continue;
+    }
+
+    if (node.type !== 'tag') {
+      continue;
+    }
+
+    const tagName = node.name.toLowerCase();
+
+    if (['script', 'style', 'noscript', 'iframe', 'svg', 'canvas', 'form'].includes(tagName)) {
+      continue;
+    }
+
+    if (/^h[1-6]$/.test(tagName)) {
+      const level = Number.parseInt(tagName[1], 10);
+      const headingText = renderInlineMarkdown($, $(node).contents().toArray(), baseUrl);
+      if (headingText) {
+        blocks.push(`${'#'.repeat(level)} ${headingText}`);
+      }
+      continue;
+    }
+
+    if (tagName === 'p') {
+      const paragraph = renderInlineMarkdown($, $(node).contents().toArray(), baseUrl);
+      if (paragraph) {
+        blocks.push(paragraph);
+      }
+      continue;
+    }
+
+    if (tagName === 'pre') {
+      const code = $(node).text().replace(/\r/g, '').trim();
+      if (code) {
+        blocks.push(`\`\`\`\n${code}\n\`\`\``);
+      }
+      continue;
+    }
+
+    if (tagName === 'blockquote') {
+      const quote = renderBlockMarkdown($, $(node).contents().toArray(), baseUrl, depth + 1)
+        .split('\n')
+        .map((line) => line ? `> ${line}` : '>')
+        .join('\n')
+        .trim();
+      if (quote) {
+        blocks.push(quote);
+      }
+      continue;
+    }
+
+    if (tagName === 'ul' || tagName === 'ol') {
+      const listMarkdown = renderListMarkdown($, node, baseUrl, depth);
+      if (listMarkdown) {
+        blocks.push(listMarkdown);
+      }
+      continue;
+    }
+
+    if (tagName === 'img') {
+      const imageMarkdown = renderInlineMarkdown($, [node], baseUrl);
+      if (imageMarkdown) {
+        blocks.push(imageMarkdown);
+      }
+      continue;
+    }
+
+    if (tagName === 'hr') {
+      blocks.push('---');
+      continue;
+    }
+
+    const childNodes = $(node).contents().toArray();
+    const childBlocks = renderBlockMarkdown($, childNodes, baseUrl, depth);
+    if (childBlocks) {
+      blocks.push(childBlocks);
+      continue;
+    }
+
+    const inline = renderInlineMarkdown($, childNodes, baseUrl);
+    if (inline) {
+      blocks.push(inline);
+    }
+  }
+
+  return blocks.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function extractReadableMarkdown(html, baseUrl) {
+  const $ = cheerio.load(html);
+  const contentRoot = selectReadableContentRoot($);
+  const contentHtml = contentRoot.html() || '';
+
+  if (!contentHtml) {
+    return '';
+  }
+
+  const $content = cheerio.load(`<div id="content-root">${contentHtml}</div>`);
+  $content('script, style, noscript, iframe, svg, canvas, form, nav, footer, header, aside').remove();
+  $content('[aria-hidden="true"], [hidden]').remove();
+
+  const markdown = renderBlockMarkdown($content, $content('#content-root').contents().toArray(), baseUrl);
+  return normalizeWhitespace(markdown);
+}
+
+function buildMarkdownDocument(metadata, contentMarkdown, targetUrl, finalUrl) {
+  const title = escapeMarkdownText(metadata.title || 'Untitled Document');
+  const description = normalizeWhitespace(metadata.description || '');
+  const metadataLines = [
+    `- Source URL: ${targetUrl}`,
+  ];
+
+  if (finalUrl && finalUrl !== targetUrl) {
+    metadataLines.push(`- Final URL: ${finalUrl}`);
+  }
+
+  if (metadata.url && metadata.url !== finalUrl && metadata.url !== targetUrl) {
+    metadataLines.push(`- OpenGraph URL: ${metadata.url}`);
+  }
+
+  if (metadata.image) {
+    metadataLines.push(`- OpenGraph image: ${metadata.image}`);
+  }
+
+  if (metadata.imageWidth || metadata.imageHeight) {
+    metadataLines.push(`- OpenGraph image size: ${metadata.imageWidth || '?'} x ${metadata.imageHeight || '?'}`);
+  }
+
+  const sections = [`# ${title}`];
+
+  if (description) {
+    sections.push(description);
+  }
+
+  sections.push(`## Metadata\n${metadataLines.join('\n')}`);
+
+  if (contentMarkdown) {
+    sections.push(`## Content\n${contentMarkdown}`);
+  }
+
+  const markdownDocument = `${sections.filter(Boolean).join('\n\n').trim()}\n`;
+  marked.lexer(markdownDocument);
+  return markdownDocument;
+}
+
+async function fetchMarkdownDocument(targetUrl, includeContent = true) {
+  const documentResponse = await fetchUrlDocument(targetUrl);
+  if (!documentResponse.ok) {
+    return documentResponse;
+  }
+
+  const metadata = extractOpenGraphMetadataFromHtml(documentResponse.html, targetUrl, documentResponse.finalUrl);
+  const contentMarkdown = includeContent
+    ? extractReadableMarkdown(documentResponse.html, documentResponse.finalUrl)
+    : '';
+  const markdownDocument = buildMarkdownDocument(
+    metadata,
+    contentMarkdown,
+    targetUrl,
+    documentResponse.finalUrl,
+  );
+
+  return {
+    ok: true,
+    status: 200,
+    body: markdownDocument,
+    cacheAliases: [documentResponse.finalUrl, metadata.url],
+  };
+}
+
+async function fetchOpenGraphMetadata(targetUrl) {
+  const documentResponse = await fetchUrlDocument(targetUrl);
+  if (!documentResponse.ok) {
+    return documentResponse;
+  }
+
+  const metadata = extractOpenGraphMetadataFromHtml(documentResponse.html, targetUrl, documentResponse.finalUrl);
 
   return {
     ok: true,
@@ -299,7 +697,7 @@ async function fetchOpenGraphMetadata(targetUrl) {
     body: {
       ...metadata,
     },
-    cacheAliases: [finalUrl, metadata.url],
+    cacheAliases: [documentResponse.finalUrl, metadata.url],
   };
 }
 
@@ -372,6 +770,53 @@ app.get('/og', async (req, res) => {
   } catch (error) {
     console.error('OpenGraph extraction error:', error);
     res.status(500).json({ error: 'Failed to extract OpenGraph metadata', details: error.message });
+  }
+});
+
+// Markdown document endpoint for AI-friendly URL reading
+app.get('/markdown', async (req, res) => {
+  try {
+    const targetUrl = normalizeTargetUrl(req.query.url);
+    const includeContent = parseBooleanQueryParam(req.query.content, true);
+
+    if (!targetUrl || !(targetUrl.startsWith('http://') || targetUrl.startsWith('https://'))) {
+      return res.status(400).json({
+        error: 'Invalid URL. URL must be provided as a query parameter and start with http:// or https://',
+        example: '/markdown?url=https://example.com&content=false'
+      });
+    }
+
+    if (isIgnoredOgDomain(targetUrl)) {
+      console.log(`Ignoring Markdown fetch for blocked domain: ${targetUrl}`);
+      return res.status(204).end();
+    }
+
+    const cacheKey = `markdown:${includeContent ? 'full' : 'meta'}:${targetUrl}`;
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+      return sendMarkdownResponse(res, cachedResult);
+    }
+
+    let requestPromise = inFlightRequests.get(cacheKey);
+    if (!requestPromise) {
+      requestPromise = fetchMarkdownDocument(targetUrl, includeContent)
+        .then((result) => {
+          const ttl = result.ok ? ogCacheTtlMs : ogErrorCacheTtlMs;
+          cacheOgResponse(cacheKey, result, ttl);
+          return result;
+        })
+        .finally(() => {
+          inFlightRequests.delete(cacheKey);
+        });
+
+      inFlightRequests.set(cacheKey, requestPromise);
+    }
+
+    const result = await requestPromise;
+    return sendMarkdownResponse(res, result);
+  } catch (error) {
+    console.error('Markdown extraction error:', error);
+    res.status(500).json({ error: 'Failed to extract Markdown document', details: error.message });
   }
 });
 
